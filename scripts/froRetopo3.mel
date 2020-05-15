@@ -1,0 +1,2767 @@
+/*
+//	FROYOK retopo (froRetopo3.mel)
+//	http://www.froyok.fr - Froyok@yahoo.fr
+//
+//////////////////////////////////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+  ####                  #####            ##                           
+ ##                     ##  ##           ##                           
+ ##     ##  ##   ####   ##  ##   ####   ######   ####   #####    #### 
+ ##     ## ###  ##  ##  ##  ##  ##  ##   ##     ##  ##  ##  ##  ##  ##
+######  ###     ##  ##  #####   ##  ##   ##     ##  ##  ##  ##  ##  ##
+ ##     ##      ##  ##  ## ##   ######   ##     ##  ##  ##  ##  ##  ##
+ ##     ##      ##  ##  ##  ##  ##       ##     ##  ##  ##  ##  ##  ##
+ ##     ##      ##  ##  ##  ##  ##       ##     ##  ##  ##  ##  ##  ##
+ ##     ##       ####   ##  ##   ####     ####   ####   #####    #### 
+                                                        ##            
+                                                        ##            
+                                                        ##  
+//////////////////////////////////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////////////////////////////////			
+//version 3.5
+-Added a function to count the number of nGons in the currently selected mesh
+-Added a function to count the number of edge borders in the currently selected mesh
+-Added insert and delete edge loop in the Quad tool
+-Added an option to automatically soften the edges of the low-poly when using the Quad Tool
+-Updated the viewport UI of the Quad Tool to display all the mouse shortcuts
+-Updated the Quad tool to give an error if the user don't have a scene in centimeters
+-Updated the UI to make it easier to use (+ removing unnecessary tools)
+-Updated the Python plugin, now gives better performances on vertices operations
+-Updated the edge extrude, now with better performances when projecting on the high poly
+-Updated the sculpt tools to improve performances when selecting all the vertices
+-Fixed an error about the Edge Loop tool not finding a froTools command
+-Fixed an error about the "edgeToVertex" option (when releasing the mouse in the Quad Tool)
+-Fixed an error when an object was too big for the Quad Tool (distance limited by 1000 units, now raised to 10000)
+-Fixed soft selection problem (now soft selection is disabled when launching the quad tool)
+-Fixed a conflict that was affecting the edge extrude under Maya 2014 ("selectTypeChangeAffectsActive" option)
+-Fixed the C++ crash of the viewport (use "currentTime" command instead of "refresh")
+
+//version 3.4
+-Updated the quad-extrude, now available as a tool (thx a lot Passerby !) with new features :
+--Click and drag Quad face extrude
+--Click and drag edge extrude (with snap and welding)
+--Edge fill hole
+--Face deletion
+--Axis Snap and Weld tolerance
+-Fixed the sculpt geometry tool not launching when you were not in hilite mode
+-Fixed the switch of the live mesh (keep your selection)
+
+//version 3.3
+-Added a new button to quickly switch between vertex and edge selection
+-Added full compatibility to call the script as a floating window
+
+//version 3.2
+-Changed the "Magnetism" function to a manual "Project geometry"
+
+//version 3.1
+-Added draggercontext tools : edge extrude and vertex quad extrude
+
+//version 3.0
+-Initial version
+
+*/
+
+global proc froRetopo3()
+{
+	int	$floating				= 0;		// 0=docked		1=floating
+	if(`optionVar -exists "frorDocked"`)
+	{
+		if(`optionVar -q "frorDocked"`)
+			$floating = 0;
+		else
+			$floating = 1;
+		
+	}
+	
+	// if Window exists already delete it, so you cant call multiple windows
+    if (`window -exists WinfroRetopo`) 
+	{
+		deleteUI WinfroRetopo;
+		if(`windowPref -exists WinfroRetopo` && !$floating)
+			windowPref -remove WinfroRetopo;
+	}
+	
+	string	$defaultDockArea	= "left";	// "top", "left", "bottom", "right";
+	string $dock				= "dockfroRetopo";
+	int $winw 				= 202 + 16;
+	int $whgh 					= 600;
+	string $title 				= "froRetopo 3.5";
+
+	//Meshes
+	global string $frorLivelist;
+	global string $live, $high, $root;
+	
+	//tools
+	global float $tweakVertexSize;
+	global string $defaultlive;
+		$defaultlive = " No live object";
+		
+	global int $savedBuildmode;
+		$savedBuildmode = 0;
+		
+	//edge/vertex extrudes variables
+	global string $savedVertexMesh;
+	global string $savedMesh;
+	
+
+	if( `dockControl -exists $dock` )
+	{
+		deleteUI -control $dock;
+	}
+	
+	//init maya functions
+	source PolySelectConvert; //init the PolySelectConvert command	
+
+	
+	//make the base window
+	window -t $title -minimizeButton 1 -maximizeButton 0 WinfroRetopo;
+
+	string $form = `formLayout -parent WinfroRetopo`;
+	
+	columnLayout;		
+		
+		/////////////////////////////////////////////////////////
+		// Doc control
+		string $floatform = `formLayout`;
+			checkBox 
+				-l "Docked | Floating" 
+				-v 1 -ann "Docked/Floating window" 
+				-cc "frorToggleDock" 
+				fror_check_dock;
+
+			image -image "froyok/froRetopo_header.png" fror_logo; 
+				
+			button
+				-l "Froyok | www.froyok.fr"
+				-bgc 0.2 0.2 0.2
+				-c "launch -web \"http://www.froyok.fr\""
+				-width ($winw - 10)
+				-height 20
+				fror_website;
+		setParent ..;
+		
+		formLayout -e
+			-attachForm  fror_check_dock  "left"  64
+			-attachForm  fror_logo  "top"  16
+			-attachForm  fror_website  "left"  18
+			-attachForm  fror_website  "top"  110
+		$floatform;
+
+		if(`optionVar -exists "frorDocked"`)
+		{
+			if(`optionVar -q "frorDocked"`)
+				checkBox -e -v 1 fror_check_dock;
+			else
+				checkBox -e -v 0 fror_check_dock;
+		}
+		
+
+		separator -h 6 -w 216 -style "none";
+	setParent ..;
+	
+	
+	
+	string $tabs = `tabLayout -innerMarginWidth 5 -innerMarginHeight 5`;
+	formLayout -edit
+		// -attachForm $tabs "top"    184
+		-attachForm $tabs "top"    140
+		 -attachForm $tabs "left"   0
+		 -attachForm $tabs "bottom" 0
+		 -attachForm $tabs "right"  0
+		 $form;
+		 
+	string $child1 = `scrollLayout -w ($winw + 25) -h 300 scroll1`;	
+		frameLayout -label "SETUP" -collapsable 1 -width $winw -bgc 0.31 0.29 0.24;
+			
+			gridLayout -numberOfColumns 2 -cellHeight 26 -cellWidth (floor(($winw / 1.5)));
+				$frorLivelist = `optionMenu 
+					-label "" 
+					-w (floor(($winw / 1.0125)))
+					-h 26
+					-ann "List of high poly mesh"
+					-cc "froRetopoChooseActiveMesh" 
+					-bgc 0.46 0.38 0.31
+					retopo_hpmenu`;
+					menuItem -p retopo_hpmenu -l $defaultlive defaultitem;
+					
+				gridLayout -numberOfColumns 1 -cellHeight 26 -cellWidth ($winw / 3);
+					button
+					-bgc 0.3 0.3 0.3
+					-h 30
+					-ann "Setup an high poly model as base for the retopology"
+					-label "Setup"
+					-c "froRetopoSetuplive";
+				setParent..;
+				
+				gridLayout -numberOfColumns 4 -cellHeight 26 -cellWidth (floor(($winw / 6)));
+					iconTextButton 
+						-style "iconOnly"
+						-image1 "froyok/froRetopo_hp_reload.png" 
+						-annotation "Reload the High Poly model list"
+						-command "froRetopoUpdateList";
+					iconTextButton 
+						-style "iconOnly"
+						-image1 "froyok/froRetopo_hp_hide.png" 
+						-annotation "Hide/Unhide the current high poly model"
+						-command "froRetopoToggleVisibility";
+					iconTextButton 
+						-style "iconOnly"
+						-image1 "froyok/froRetopo_hp_xray.png" 
+						-annotation "Toggle xRay mode on current high poly model"
+						-command "froRetopoToggleXray";
+					iconTextButton 
+						-style "iconOnly"
+						-image1 "froyok/froRetopo_hp_shader.png" 
+						-annotation "Apply retopo shader for a low poly mesh"
+						-command "froRetopoSetupShader";
+				setParent..;
+					
+				gridLayout -numberOfColumns 1 -cellHeight 26 -cellWidth ($winw / 3);
+					button
+						-bgc 0.2 0.2 0.2
+						-ann "Setup an high poly model as base for the retopology"
+						-label "UnSetup"
+						-c "froRetopoRemoveMesh";
+				setParent..;
+			setParent..;
+				
+			
+			gridLayout -numberOfColumns 1 -cellHeight 22 -cellWidth ($winw);
+				gridLayout -numberOfColumns 2 -cellWidth (floor(($winw / 1.65)));
+					floatSlider 
+						-w 64 -h 25 
+						-step 0.01 -min 0 -max 1 -v 0 
+						-dc "froRetopoUpdateOffset" 
+						-ann "Camera offset for the high poly mesh"
+						retopo_offsetSlider;
+						
+					gridLayout -numberOfColumns 1 -cellWidth (floor(($winw / 2.4)));
+						text -l " : HP overlapping" -align "left";
+					setParent..;
+				setParent..;
+				
+				gridLayout -numberOfColumns 2 -cellHeight 22 -cellWidth (floor(($winw / 1.65)));
+					floatSlider 	
+						-w 64 -h 25 
+						-step 0.1 -min 0 -max 1 -v 0.5 
+						-dc "froRetopoUpdateTransparency" 
+						-ann "Level of transparency for the retopo shader"
+						retopo_shaderSlider;
+						
+					gridLayout -numberOfColumns 1 -cellWidth (floor(($winw / 2.4)));
+						text -l " : Shader opacity" -align "left";
+					setParent..;
+				setParent..;
+			setParent..;
+			
+			gridLayout -numberOfColumns 1 -cellHeight 24 -cellWidth $winw;
+				button
+					-bgc 0.7 0.48 0.39
+					-l "Shader Color"
+					-c "froRetopoColor"
+					froRetopoButton_shadercolor;
+			setParent ..;
+
+			separator -h 2 -w 200 -style "in";
+		setParent..;
+
+		
+		frameLayout -label "TOOLS" -collapsable 1 -width $winw -bgc 0.38 0.21 0.17;
+
+			gridLayout -numberOfColumns 2 -cellHeight 22 -cellWidth ($winw / 2);
+				button
+					-label "Border Edges" 
+					-w 48 -h 22 
+					-bgc 0.15 0.15 0.15
+					-ann "Toggle poly border visibility"
+					-c "ToggleBorderEdges; polyOptions -gl -sizeBorder 6";
+					
+				button
+					-l "Display Tri"
+					-bgc 0.29 0.22 0.15
+					-c "polyOptions -r -dt 1";
+					
+				button
+					-l "Check Borders"
+					-bgc 0.22 0.22 0.22
+					-c "froRetopoCheckBorder";
+					
+				button
+					-l "Check nGons"
+					-bgc 0.39 0.32 0.25
+					-c "froRetopoNGons";
+			setParent..;
+			
+		
+			gridLayout -numberOfColumns 1 -cellHeight 22 -cellWidth ($winw);
+				gridLayout -numberOfColumns 2 -cellWidth (floor(($winw / 1.65)));
+				floatSlider 
+					-w 64 -h 25 
+					-v 6
+					-min 3 -max 16 -s 3
+					-ann "Set the size of the vertex component display on the current selected mesh"
+					-dc "frofroRetopoSliders" 
+					froRetopo_vertexSlider;
+						
+					gridLayout -numberOfColumns 1 -cellWidth (floor(($winw / 2.4)));
+						text -l " : Vertex size" -align "left";
+					setParent..;
+				setParent..;
+			setParent..;
+			
+			
+			gridLayout -numberOfColumns 2 -cellHeight 16 -cellWidth ($winw / 2);
+				checkBox 
+					-v 1
+					-label "Soften edges"
+					-ann "Soften edges of the retopo mesh"
+					froRetopo_checkSoften;
+				
+				checkBox 
+					-label "Tweak Select"
+					-changeCommand "froRetopoToggleTweak"
+					-ann "Toggle tweak selection mode"
+					froRetopo_checkTweak;
+			setParent..;
+
+			
+			gridLayout -numberOfColumns 5 -cellHeight 32 -cellWidth ($winw / 5);					
+				
+				text -l "";
+				
+				iconTextButton 
+					-style "iconOnly"
+					-image1 "polyCreateFacet.png"
+					-annotation "Make polygon tool"
+					-command "setToolTo polyCreateFacetContext";
+					
+				iconTextButton 
+					-style "iconOnly"
+					-image1 "polyAppendFacet.png"
+					-annotation "Append polygon tool"
+					-command "setToolTo polyAppendFacetContext";
+					
+				shelfButton 
+					-style "iconOnly"
+					-image1 "polySplitEdgeRing.png"
+					-annotation "Insert Edge Loop tool"
+					-dcc "setToolTo polySelectEditContext; froToolsShowToolsSettings"
+					-command "setToolTo polySelectEditContext;";				 
+			
+				text -l "";
+			
+			setParent..;
+			
+			gridLayout -numberOfColumns 1 -cellHeight 38 -cellWidth ($winw);	
+				button
+					-l "Quad Tool"
+					-c "toolVertexEtrude"
+					-ann "Launch the tool to create topology on a live mesh"
+					-bgc 0.5 0.26 0.20;
+			setParent ..;
+			
+				separator -h 2 -style "in" -bgc 0.27 0.27 0.27;
+			
+			gridLayout -numberOfColumns 1 -cellHeight 20 -cellWidth ($winw);
+				gridLayout -numberOfColumns 2 -cellHeight 24 -cellWidth ($winw / 2);
+					checkBox -l "Quad tool snap" -ann "Enable snapping when moving vertex with the Quad Tool" -v 1 froRetopo_check_snap;
+					
+					gridLayout -numberOfColumns 2 -cellHeight 24 -cellWidth ($winw / 4);
+						text -l "Dist : " -align "right";
+						floatField -v 0.1 -min 0.0001 -max 100 -cc "froRetopoUpdateFieldSnap" froRetopo_field_snaptol;
+					setParent ..;			
+				setParent ..;				
+				
+				gridLayout -numberOfColumns 1 -cellHeight 24 -cellWidth (floor(($winw / 1.025)));
+					floatSlider -step 0.01 -min 0.01 -max 10 -v 1 -cc "froRetopoUpdateSliderSnap" froRetopo_slider_snaptol;				
+				setParent ..;				
+				
+				gridLayout -numberOfColumns 3 -cellHeight 24 -cellWidth ($winw / 3);
+					checkBox -l "Snap X" -ann "" -v 1 froRetopo_check_snap_x;
+					checkBox -l "Snap Y" -ann "" -v 0 froRetopo_check_snap_y;
+					checkBox -l "Snap Z" -ann "" -v 0 froRetopo_check_snap_z;
+				setParent ..;
+			setParent ..;
+				
+				separator -h 2 -style "in" -bgc 0.27 0.27 0.27;
+
+			gridLayout -numberOfColumns 1 -cellHeight 20 -cellWidth ($winw);
+				gridLayout -numberOfColumns 2 -cellHeight 24 -cellWidth ($winw / 2);
+					checkBox -l "Quad auto weld" -ann "Enable target weld when with close vertex when drawing a quad" -v 1 froRetopo_check_weldextrude;
+					
+					gridLayout -numberOfColumns 2 -cellHeight 24 -cellWidth ($winw / 4);
+						text -l "Dist : " -align "right";
+						floatField -v 0.1 -min 0.001 -max 100 -cc "froRetopoUpdateFieldWeld" froRetopo_field_snapweld;
+					setParent ..;
+				setParent ..;
+				
+				gridLayout -numberOfColumns 1 -cellHeight 24 -cellWidth (floor(($winw / 1.025)));
+					floatSlider -step 0.01 -min 0.01 -max 2 -v 0.1 -cc "froRetopoUpdateSliderWeld" froRetopo_slider_snapweld;				
+				setParent ..;
+				
+				
+				checkBox -l "Project edge extrude" -ann "Enable edge snapping on the live mesh when the user release the mouse button" -v 1 froRetopo_check_edgeproject;
+				
+				
+			setParent ..;
+				
+				separator -h 2 -style "in" -bgc 0.27 0.27 0.27;
+
+			gridLayout -numberOfColumns 1 -cellHeight 32 -cellWidth ($winw);
+				button
+					-l "Project geometry"
+					-bgc 0.26 0.29 0.4
+					-c "froRetopoProjectGeometry"
+					retopo_magentism;
+			setParent..;
+				
+			gridLayout -numberOfColumns 2 -cellHeight 32 -cellWidth ($winw / 2);
+				floatSlider 
+					-w 64 -h 25 
+					-step 0.01 -min 0 -max 1 -v 0.75 
+					-dc "froRetopoSculptOpacity" 
+					-ann "Brush opacity"
+					retopo_opacitySlider;
+					
+				gridLayout -numberOfColumns 3 -cellHeight 32 -cellWidth ($winw / 6);
+					iconTextButton 
+						-style "iconOnly"
+						-image1 "sculptSmooth.png" 
+						-annotation ""
+						-command "froRetopoSculpt Smooth";
+					iconTextButton 
+						-style "iconOnly"
+						-image1 "sculptRelax.png" 
+						-annotation ""
+						-command "froRetopoSculpt Relax";
+					iconTextButton 
+						-style "iconOnly"
+						-image1 "sculptPinch.png" 
+						-annotation ""
+						-command "froRetopoSculpt Pinch";
+				setParent..;
+			setParent..;
+		setParent..;
+		
+		separator -h 4 -w 200 -style "out";
+		
+		frameLayout -label "Info" -collapsable 0 -width $winw;
+			gridLayout -numberOfColumns 2 -cellHeight 26 -cellWidth $winw;
+				button
+					-l "Add \"froRetopo\" to the Shelf"
+					-c "froRetopoShelf"
+					-bgc 0.25 0.25 0.25;
+			setParent..;
+		setParent..;
+		
+		
+	setParent; //tablayout
+	
+	tabLayout -edit
+		-tabLabel $child1 ("                        " + $title + "                        ")
+		$tabs;
+	
+	setParent; //columnlayout
+	setParent; //scrollLayout
+	
+	if($floating)
+	{
+		//show the window with the old system
+		showWindow WinfroRetopo;
+		window -e -height $whgh WinfroRetopo;
+	}
+	else
+	{
+	dockControl
+		-area			$defaultDockArea
+		-content		WinfroRetopo
+		-allowedArea	"left"
+		-allowedArea	"right"
+		-label			$title
+		$dock;
+	}
+	
+	//setup
+	froRetopoUpdateList();
+	checkBox -e -v (`manipMoveContext -query -tweakMode Move`) froRetopo_checkTweak;
+	
+	//change button based on shader color
+	if(`objExists "froRetopoSH"`)
+		button -e -bgc `getAttr "froRetopoSH.color.colorR"` `getAttr "froRetopoSH.color.colorG"` `getAttr "froRetopoSH.color.colorB"` froRetopoButton_shadercolor;
+	
+	//setup finished
+	print($title + " is ready.");
+}
+
+//make shelf button
+global proc froRetopoShelf()
+{
+	global string $gShelfTopLevel;
+	string $currentShelf = `tabLayout -q -st $gShelfTopLevel`;
+	setParent ($gShelfTopLevel + "|" + $currentShelf);
+	
+	shelfButton 
+		-label "froRetopo"
+		-annotation "Launch froRetopo"
+		-image1 "froyok/froretopo.png" 
+		// -command "if(`dockControl -exists dockfroRetopo`) { dockControl -e -raise dockfroRetopo; } else { source froRetopo3.mel; froRetopo3; }"; //no need to make a new button, automatically update
+		-command "source froRetopo3.mel; froRetopo3;"; //no need to make a new button, automatically update
+}
+
+//vertex size display update
+global proc frofroRetopoSliders()
+{
+	polyOptions -sv `floatSlider -q -v froRetopo_vertexSlider`;
+}
+
+global proc froRetopoToggleTweak()
+{
+	int $var = `manipMoveContext -q -tweakMode Move`;
+	if ($var == 0) $var = 1; else $var = 0;
+	
+	manipMoveContext -e -tweakMode $var Move;
+	checkBox -e -v $var froRetopo_checkTweak;
+}
+
+
+global proc frorToggleDock()
+{
+	if(!`checkBox -q -v fror_check_dock`)
+	{
+		optionVar -intValue "frorDocked" 0;
+		print `optionVar -q "frorDocked"`;
+	}
+	else
+	{
+		optionVar -intValue "frorDocked" 1;
+		print `optionVar -q "frorDocked"`;
+	}
+
+	froRetopo3();
+}
+
+
+
+
+//////////////////////////////////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////////////////////////////////
+/*
+          ##                                      ##                                  
+##        ##             ##             ##  ##    ##            #####                 
+##                       ##             ##  ##                  ##  ##                
+##      ####     #####  ######          ##  ##  ####            ##  ##   ####    #####
+##        ##    ##       ##             ##  ##    ##            ##  ##  ##  ##  ##    
+##        ##    ##       ##             ######    ##    ######  #####   ##  ##  ##    
+##        ##     ####    ##             ##  ##    ##            ## ##   ######   #### 
+##        ##        ##   ##             ##  ##    ##            ##  ##  ##          ##
+##        ##        ##   ##             ##  ##    ##            ##  ##  ##          ##
+######  ######  #####     ####          ##  ##  ######          ##  ##   ####   ##### 
+*/
+//////////////////////////////////////////////////////////////////////////////////////////////////////////
+//setup an HP for being used a retopo base
+global proc froRetopoSetuplive()
+{
+	global string $frorLivelist;
+	global string $defaultlive;
+	string $sel[] = `ls -sl -l`;
+	string $oldname;
+	
+	if( size($sel) != 0 )
+	{		
+		//create the retopo group
+		string $root = `group -empty -name (substituteAllString($sel[0], "|", "") + "_RETOPO")`;
+		
+		//preparation
+		string $live = (substituteAllString($sel[0], "|", "") + "_live");
+		duplicate -n (substituteAllString($sel[0], "|", "") + "_live") $sel[0];
+		
+		string $high = (substituteAllString($sel[0], "|", "") + "_high");
+		$oldname = substituteAllString($sel[0], "|", "");
+		rename $sel[0] $high;
+
+		//reset transform
+		select -r $live;
+		makeIdentity -apply true -t 1 -r 1 -s 1 -n 0;
+		CenterPivot;
+		
+		select -r $high;
+		makeIdentity -apply true -t 1 -r 1 -s 1 -n 0;
+		CenterPivot;
+		
+		
+		string $highShape = froRetopoGetShapes($high);
+		setAttr ($highShape + ".overrideEnabled") 1;
+		setAttr ($highShape + ".overrideDisplayType") 2; //reference display
+		
+		string $liveShape = froRetopoGetShapes($live);
+		setAttr ($liveShape + ".overrideEnabled") 1;
+		setAttr ($liveShape + ".overrideDisplayType") 1; //template display
+		setAttr ($liveShape + ".overrideVisibility") 0;
+		
+		
+		select -r $live;
+		makeLive;
+		
+		//add object to menu and update the list
+		menuItem -p $frorLivelist -l $high ("menu_" + $oldname);
+		int $numItems = `optionMenu -q -numberOfItems retopo_hpmenu`;
+		optionMenu -e -sl $numItems retopo_hpmenu;
+		
+		//parenting
+		parent $high $root;
+		parent $live $root;
+		
+		connectAttr "persp.translate" ($high + ".scalePivot");
+		
+		select -cl;
+	}
+}
+
+//return a transform shape
+global proc string froRetopoGetShapes( string $xform )
+{
+   string $shapes[];
+   $shapes[0] = $xform;
+
+   if ( "transform" == `nodeType $xform` )
+   {
+      $shapes = `listRelatives -fullPath -shapes $xform`;
+   }
+
+   return $shapes[0];
+}
+
+//remove an high poly mesh from the list and unsetup the HP mesh
+global proc froRetopoRemoveMesh()
+{
+	global string $frorLivelist;
+	global string $defaultlive;
+	
+	string $sel[] = `ls -sl`;
+	string $high = `optionMenu -q -value retopo_hpmenu`;
+	
+	if( $high != $defaultlive )
+	{
+		string $name = `substitute "_high" $high ""`;
+		rename $high $name; //rename object
+		$high = $name; //update the variable
+		parent -w $high; //unparent
+
+		scale -x 1 -y 1 -z 1 $high;
+		disconnectAttr "persp.translate" ($high + ".scalePivot");
+		
+		string $highShape = froRetopoGetShapes($high);
+		setAttr ($highShape + ".overrideDisplayType") 0;
+		setAttr ($highShape + ".overrideEnabled") 0; //disable override
+		
+		delete ($high + "_RETOPO");
+		deleteUI ("menu_" + $high);
+		froRetopoUpdateList();
+	}
+}
+
+
+global proc froRetopoUpdateList()
+{
+	global string $frorLivelist;
+	global string $defaultlive;
+
+	//-------------------------------------------------------
+	//check the list > add item
+	string $sel[] = `ls -dag -tr`; //list all mesh in scene
+	for( $obj in $sel)
+	{
+		if(endsWith($obj, "_high"))
+		{
+			//preparation
+			string $oldname = startString($obj, (size($obj) - 5));
+			
+			if(!`menuItem -exists ("menu_" + $oldname)`)
+			{
+				//add object to menu and update the list
+				menuItem -p $frorLivelist -l $obj ("menu_" + $oldname);
+				int $numItems = `optionMenu -q -numberOfItems retopo_hpmenu`;
+				optionMenu -e -sl $numItems retopo_hpmenu;
+			}
+		}
+	}
+	
+	
+	//-------------------------------------------------------
+	//check the list > remove items
+	int $tempi = `optionMenu -q -numberOfItems retopo_hpmenu`;
+	if($tempi != 0)
+	{
+		for($i = $tempi; $i>0; $i--)
+		{
+			optionMenu -e -sl $i retopo_hpmenu;
+			string $name = `optionMenu -q -v retopo_hpmenu`;
+			
+			string $sel[] = `ls -dag -tr`; //list all mesh in scene
+			int $tempo = 0;
+			
+			for( $obj in $sel)
+			{
+				//chekc for a retopo mesh
+				if(endsWith($obj, "_high") )
+				{
+					//chekc if the same
+					if( $obj == $name )
+						$tempo = 1;
+				}
+			}
+			
+			if($tempo == 0 && $name != $defaultlive)
+			{
+				string $tempu = startString($name, (size($name) - 5));
+				deleteUI ("menu_" + $tempu);
+			}
+		}
+	}
+}
+
+
+global proc froRetopoChooseActiveMesh()
+{
+	global string $defaultlive;
+	
+	string $sel[] = `ls -sl`;
+	select -cl; //unselect
+	makeLive -none;	//disbale make live
+	
+	string $high = `optionMenu -q -v retopo_hpmenu`;
+	
+	if($high != $defaultlive)
+	{
+		select -r ((startString($high, (size($high) - 5))) + "_liveShape");
+		makeLive;
+	}
+	
+	
+	if(size($sel) != 0)
+	{
+		//reselect the saved selection
+		select -r $sel;
+		
+		/*
+		//tokenize for hiliting the shape
+		string $buffer[];
+		$numTokens = `tokenize $sel[0] "." $buffer`;
+		hilite -r $buffer[0];
+		*/
+	}
+}
+
+
+
+//////////////////////////////////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////////////////////////////////
+/*
+ ####   ##                  ##                        
+##  ##  ##                  ##                        
+##      #####    ####    #####   ####   ##  ##   #####
+ ##     ##  ##      ##  ##  ##  ##  ##  ## ###  ##    
+  ##    ##  ##      ##  ##  ##  ##  ##  ###     ##    
+   ##   ##  ##   #####  ##  ##  ######  ##       #### 
+    ##  ##  ##  ##  ##  ##  ##  ##      ##          ##
+##  ##  ##  ##  ##  ##  ##  ##  ##      ##          ##
+ ####   ##  ##   #####   #####   ####   ##      ##### 
+*/
+//////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+global proc froRetopoColor()
+{
+	//query the current color
+	float $wireColor[] = `button -q -bgc froRetopoButton_shadercolor`;
+	string $shadername = "froRetopoSH";
+	
+	//query the new color
+	colorEditor -rgbValue $wireColor[0] $wireColor[1] $wireColor[2];
+	if (`colorEditor -query -result`) 
+	{
+		float $values[3] = `colorEditor -query -rgb`;
+		print ("RGB = " + $values[0] + " " + $values[1] + " " + $values[2] + "\n");
+
+		//update
+		button -e -bgc $values[0] $values[1] $values[2] froRetopoButton_shadercolor;
+		
+		if(`objExists $shadername`)
+			setAttr($shadername + ".color") -type double3 $values[0] $values[1] $values[2];
+	} 
+	else 
+		print ("Color editor was dismissed\n");
+}
+
+
+global proc froRetopoSetupShader()
+{
+	string $shadername = "froRetopoSH";
+	
+	//get objects
+	string $sel[] = `ls -sl`;
+	
+	//shader already exist ?
+	if(!`objExists $shadername`)
+	{
+		//setup shader
+		$shaderRetopo = `shadingNode -asShader -name $shadername phong`;
+		
+		if(!`objExists ($shaderRetopo + "SG")`)
+		{
+			string $shaderRetopoSG   = `sets -renderable true -noSurfaceShader true -empty -n ($shaderRetopo+"SG")`;
+			//connectAttr -force ($shaderRetopoSG + ".surfaceShader") ($shaderRetopo + ".outColor");
+		}
+		
+		setAttr($shaderRetopo + ".transparency") 	-type double3 0.5 0.5 0.5;
+		setAttr($shaderRetopo + ".color") 	-type double3 0.6 0.6 0.3;
+	}
+	
+	//apply shader on selected objects
+	if(size($sel) != 0)
+	{
+		//tokenize for hiliting the shape
+		string $buffer[];
+		$numTokens = `tokenize $sel[0] "." $buffer`;
+		select -r $buffer[0];
+		hyperShade -assign $shadername;
+		
+		//reselect objects
+		select -r $sel;
+		hilite -r $buffer[0];
+	}
+	
+}
+
+
+global proc froRetopoToggleXray()
+{
+	global string $defaultlive;
+
+	string $high = `optionMenu -q -v retopo_hpmenu`;
+	if($high != $defaultlive)
+	{
+		int $temp[] = `displaySurface -q -xRay $high`;
+		if($temp[0])
+			displaySurface -xRay 0 -twoSidedLighting 0 $high;
+		else
+			displaySurface -xRay 1 -twoSidedLighting 0 $high;
+	}
+}
+
+
+global proc froRetopoToggleVisibility()
+{
+	global string $defaultlive;
+
+	string $high = `optionMenu -q -v retopo_hpmenu`;
+	if($high != $defaultlive)
+	{
+		if(`getAttr ($high + ".visibility")`)
+			setAttr ($high + ".visibility") 0;
+		else
+			setAttr ($high + ".visibility") 1;
+	}
+}
+
+
+//////////////////////////////////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////////////////////////////////
+/*
+                  ##                                  
+ ####   ####      ##        ##                        
+##  ##    ##                ##                        
+##        ##    ####     #####   ####   ##  ##   #####
+ ##       ##      ##    ##  ##  ##  ##  ## ###  ##    
+  ##      ##      ##    ##  ##  ##  ##  ###     ##    
+   ##     ##      ##    ##  ##  ######  ##       #### 
+    ##    ##      ##    ##  ##  ##      ##          ##
+##  ##    ##      ##    ##  ##  ##      ##          ##
+ ####   ######  ######   #####   ####   ##      ##### 
+*/
+//////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+global proc froRetopoUpdateTransparency()
+{
+	if(`objExists "froRetopoSH"`)
+	{
+		float $trans = `floatSlider -q -v retopo_shaderSlider`;
+		setAttr "froRetopoSH.transparency" $trans $trans $trans;
+
+		refresh  -cv;
+	}
+}
+
+global proc froRetopoUpdateOffset()
+{
+	global string $defaultlive;
+	
+	//get the scale value
+	float $scale = `floatSlider -q -v retopo_offsetSlider`;
+	$scale = pow($scale, 2);
+	$scale = 1 + ($scale * 5);
+	
+	//apply value
+	$high = `optionMenu -q -v retopo_hpmenu`;
+	if($high != $defaultlive)
+	{
+		scale -x $scale -y $scale -z $scale $high;
+
+		refresh -cv;
+	}
+}
+
+global proc froRetopoVertexSize()
+{
+	float $vtx = `floatSlider -q -v retopo_vertexSlider`;
+	polyOptions -sv $vtx;
+	polyOptions -suv $vtx;
+}
+
+
+//////////////////////////////////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////////////////////////////////
+/*
+#####            ##                           
+##  ##           ##                           
+##  ##   ####   ######   ####   #####    #### 
+##  ##  ##  ##   ##     ##  ##  ##  ##  ##  ##
+#####   ##  ##   ##     ##  ##  ##  ##  ##  ##
+## ##   ######   ##     ##  ##  ##  ##  ##  ##
+##  ##  ##       ##     ##  ##  ##  ##  ##  ##
+##  ##  ##       ##     ##  ##  ##  ##  ##  ##
+##  ##   ####     ####   ####   #####    #### 
+                                ##            
+                                ##            
+                                ##            
+*/
+//////////////////////////////////////////////////////////////////////////////////////////////////////////
+global proc froRetopoProjectGeometry()
+{
+	//check current live object
+	string $worksel;
+	global string $defaultlive;
+	if(froRetopoGetLive() != $defaultlive)
+	{
+		int $t = 0;
+		string $sel[] = `ls -sl -l -fl`;
+		
+		if(size($sel) <= 0)
+		{
+			//check hilite
+			$sel = `ls -hl -l -fl`;
+		}
+		
+		if(size($sel) <= 0)
+		{
+			error "No mesh selected for projecting.";
+		}
+		else
+		{
+			//check what is selected
+			if ( size(`filterExpand -sm 34`) != 0 
+				|| size(`filterExpand -sm 32`) != 0
+				|| size(`filterExpand -sm 31`) != 0)
+			{
+				//tokenize using the mesh not component
+				string $buffer[];
+				$numTokens = `tokenize $sel[0] "." $buffer`;
+				$worksel = $buffer[0];
+			}
+			else
+				$worksel = $sel[0];
+			
+			transferAttributes -transferPositions 1 -searchMethod 3 (froRetopoGetLive()) $worksel;
+
+			delete -ch $worksel;
+		}
+	}
+	else
+		error "No mesh for Retopo enabled, impossible to project the geometry.";
+}
+
+//get current live mesh used
+global proc string froRetopoGetLive()
+{
+	global string $frorLivelist;
+	global string $defaultlive;
+	string $high = `optionMenu -q -v $frorLivelist`;
+	if($high != $defaultlive)
+		$high = (startString($high, (size($high) - 5))) + "_live";
+	else
+		$high = $defaultlive;
+	
+	return $high;
+}
+
+
+//autoWeld
+global proc froRetopoAutoweld()
+{
+	int $w = `checkBox -q -v retopo_autoweld`;
+	if ($w == 1)
+	{
+		string $Sel[] = `ls -hl`;
+		if (`size $Sel` == 0)
+		{
+			$Sel = `ls -sl -l`;
+		}
+
+		if (`size $Sel` != 0 )
+		{
+			float $d = `floatField -q -v retopo_weldrange`;
+			polyMergeVertex -d $d -am 1 -ch 1 $Sel[0];
+		}
+	}
+}
+
+//////////////////////////////////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////////////////////////////////
+/*
+######                  ####          
+  ##                      ##          
+  ##     ####    ####     ##     #####
+  ##    ##  ##  ##  ##    ##    ##    
+  ##    ##  ##  ##  ##    ##    ##    
+  ##    ##  ##  ##  ##    ##     #### 
+  ##    ##  ##  ##  ##    ##        ##
+  ##    ##  ##  ##  ##    ##        ##
+  ##     ####    ####   ######  ##### 
+*/
+//////////////////////////////////////////////////////////////////////////////////////////////////////////
+//check for Open Border edges
+global proc froRetopoCheckBorder()
+{
+	string $sel[] = `ls -sl`;
+	
+	if(size($sel) != 0)
+	{
+		//select mesh (with convertion to avoid components)
+		select -r $sel[0]; //select only 1
+		selectMode -object; //convert to object
+		$sel = `ls -sl`; //erase and reselect only our 1 object
+		select -r $sel[0];
+		
+		polySelectConstraint -mode 3 -type 0x8000 -where 1;
+		polySelectConstraint -disable;
+		selectMode -component;
+		
+		string $selng[] = `filterExpand -fullPath 1 -expand 1 -sm 32`;
+
+		if(size($selng) > 0)
+		{	
+			hilite -r $sel[0];
+			selectType -smp 0 -sme 0 -smf 1 -smu 0 -pv 0 -pe 0 -pf 1 -puv 0;
+			
+			print (size($selng) + " border edge(s) found on \"" + $sel[0] + "\"");
+		}
+		else
+		{
+			selectMode -object;
+			select -r $sel[0];
+			print "No border edge(s) found.";
+		}
+		
+	}
+}
+
+
+//check for NGons
+global proc froRetopoNGons()
+{
+	string $sel[] = `ls -sl`;
+	
+	if(size($sel) != 0)
+	{
+		//select mesh (with convertion to avoid components)
+		select -r $sel[0]; //select only 1
+		selectMode -object; //convert to object
+		$sel = `ls -sl`; //erase and reselect only our 1 object
+		select -r $sel[0];
+		
+		//select n-gons
+		polySelectConstraint -mode 3 -type 0x0008 -size 3; 
+		polySelectConstraint -disable; 
+		selectMode -component;
+		
+		string $selng[] = `filterExpand -fullPath 1 -expand 1 -sm 34`;
+
+		if(size($selng) > 0)
+		{	
+			hilite -r $sel[0];
+			selectType -smp 0 -sme 0 -smf 1 -smu 0 -pv 0 -pe 0 -pf 1 -puv 0;
+			
+			print (size($selng) + " n-gons found on \"" + $sel[0] + "\"");
+		}
+		else
+		{
+			selectMode -object;
+			select -r $sel[0];
+			print "No n-gons found.";
+		}
+		
+	}
+}
+
+
+
+
+
+
+global proc froRetopoFillHole()
+{
+	if ( size(`filterExpand -sm 32`) != 0) //Edge
+	{
+			// Close empty loop
+			polyCloseBorder -constructionHistory 1;
+
+			// add divisions 
+			polyTriangulate -constructionHistory 1;
+			polyQuad -constructionHistory 1 -keepGroupBorder 1 -keepTextureBorders 1;
+	}
+	else //classic fill hole
+		polyCloseBorder -constructionHistory 1;
+}
+
+global proc froRetopoChangeSelMode(int $input)
+{
+	int $bool = 0;//`checkBox -q -v retopo_convertsel`;
+	string $sel[] = `ls -sl`;
+	selectMode -component;
+	
+	if($input == 3)
+	{
+		if(size($sel) != 0 && $bool) PolySelectConvert 1; //convert to faces
+		else select -cl;
+		selectType -smp 0 -sme 0 -smf 1 -smu 0 -pv 0 -pe 0 -pf 1 -puv 0;
+	}
+	else if($input == 2)
+	{
+		if(size($sel) != 0 && $bool) PolySelectConvert 2; //convert to edges
+		else select -cl;
+		selectType -smp 0 -sme 1 -smf 0 -smu 0 -pv 0 -pe 1 -pf 0 -puv 0;
+	}
+	else if($input == 1)
+	{
+		if(size($sel) != 0 && $bool) PolySelectConvert 3; //convert to vetrex
+		else select -cl;
+		selectType -smp 1 -sme 0 -smf 0 -smu 0 -pv 1 -pe 0 -pf 0 -puv 0;
+	}
+	else //other inputs return to object mode
+	{
+		//check the current tool before switching to object mode
+		if(`currentCtx` != "moveSuperContext"
+		|| `currentCtx` != "RotateSuperContext"
+		|| `currentCtx` != "scaleSuperContext" ) setToolTo moveSuperContext;
+		selectMode -object;
+	}
+}
+
+
+global proc froRetopoToggleComponents()
+{
+	if(`selectMode -q -component`)
+	{
+		if(`selectType -q -polymeshVertex`)
+		{
+			//edges
+			select -cl;
+			selectType -smp 0 -sme 1 -smf 0 -smu 0 -pv 0 -pe 1 -pf 0 -puv 0;
+		}
+		else
+		{
+			select -cl;
+			selectType -smp 1 -sme 0 -smf 0 -smu 0 -pv 1 -pe 0 -pf 0 -puv 0;
+		}
+	}
+	else //convert to vertex
+	{
+		selectMode -component;
+		select -cl;
+		selectType -smp 1 -sme 0 -smf 0 -smu 0 -pv 1 -pe 0 -pf 0 -puv 0;
+	
+	}
+}
+
+
+//sculpt tools
+global proc froRetopoSculpt(string $SculptMode)
+{
+	//check if vertices are selected
+	if ( size(`filterExpand -sm 31`) == 0)
+	{
+		string $mesh;
+		
+		//query "hilite" meshes
+		string $sel[] = `ls -hl -l`;
+		
+		//do we have an highligted mesh ?
+		if(size($sel) != 0)
+		{
+			$mesh = substituteAllString($sel[0], "|", "");
+		}
+		else
+		{
+			//query selected object
+			$sel = `ls -sl`;
+			
+			string $buffer[];
+			$numTokens = `tokenize $sel[0] "." $buffer`;
+			$buffer[0] = substituteAllString($buffer[0], "|", "");
+			$mesh = $buffer[0];
+		}
+
+		// select -r $mesh;
+		
+		string $vtx[] = `polyListComponentConversion -toVertex $mesh`;
+		
+		froRetopoChangeSelMode(1); //to vertex
+	
+		select -add $vtx;
+		
+		hilite -r $mesh;
+		
+		SculptGeometryTool;
+		
+		float $v = `floatSlider -q -v retopo_opacitySlider`;
+		artPuttyCtx -e -opacity $v `currentCtx`;
+
+		if ($SculptMode == "Smooth")
+			artPuttyCtx -e -mtm "smooth" `currentCtx`;
+		else if ($SculptMode == "Relax")
+			artPuttyCtx -e -mtm "relax" `currentCtx`;
+		else
+			artPuttyCtx -e -mtm "pinch" `currentCtx`;
+	}
+	else
+	{
+		SculptGeometryTool;
+		
+		float $v = `floatSlider -q -v retopo_opacitySlider`;
+		artPuttyCtx -e -opacity $v `currentCtx`;
+
+		if ($SculptMode == "Smooth")
+			artPuttyCtx -e -mtm "smooth" `currentCtx`;
+		else if ($SculptMode == "Relax")
+			artPuttyCtx -e -mtm "relax" `currentCtx`;
+		else
+			artPuttyCtx -e -mtm "pinch" `currentCtx`;
+	}
+}
+
+
+global proc froRetopoSculptOpacity()
+{
+	float $v = `floatSlider -q -v retopo_opacitySlider`;
+	artPuttyCtx -e -opacity $v artPuttyContext;//`currentCtx`;
+}
+
+
+
+
+//====================================================================
+//====================================================================
+//
+//Vertex extrude tools functions
+//
+//====================================================================
+//====================================================================
+global proc froRetopoUpdateSliderSnap()
+{
+	floatField -e -v (`floatSlider -q -v froRetopo_slider_snaptol`) froRetopo_field_snaptol;
+}
+
+global proc froRetopoUpdateFieldSnap()
+{
+	float $i = `floatField -q -v froRetopo_field_snaptol`;
+	if($i > 10)
+		$i = 10;
+	else if($i < 0.01)
+		$i = 0.01;
+		
+	floatSlider -e -v $i froRetopo_slider_snaptol;
+}
+
+
+global proc froRetopoUpdateSliderWeld()
+{
+	floatField -e -v (`floatSlider -q -v froRetopo_slider_snapweld`) froRetopo_field_snapweld;
+}
+
+global proc froRetopoUpdateFieldWeld()
+{
+	float $i = `floatField -q -v froRetopo_field_snapweld`;
+	if($i > 6)
+		$i = 6;
+	else if($i < 0.01)
+		$i = 0.01;
+		
+	floatSlider -e -v $i froRetopo_slider_snapweld;
+}
+
+
+global proc toolVertexEtrude()
+{
+	global string $savedVertexMesh;
+	global string $savedMesh;
+	global float $vtx_pos[3];
+	global string $defaultlive;
+
+	global int $savedBuildmode;
+	
+	//////////////////////////////////////////////////////////////
+	// Check before launching the tool
+	//////////////////////////////////////////////////////////////	
+	
+	//check if scene is in centimeters
+	if(`currentUnit -q -l` != "cm")
+	{
+		error "The Quad Tool can't work in a scene that is not in centimeters.";
+	}
+	
+	//check if python plugin is loaded
+	if(!`pluginInfo -q -loaded "froCmds.py"`)
+		error "Impossible to find the \"froCmds.py\" plugin. The Quad Tool can't work without it.";
+	
+	//check if a live mesh is enabled, if not -> quit
+	if(froRetopoGetLive() == $defaultlive)
+		error "No live mesh enabled, impossible to draw quads, please select a mesh in the list.";
+		
+
+	//////////////////////////////////////////////////////////////
+	// Disable tools that will create conflicts
+	//////////////////////////////////////////////////////////////	
+	//disable soft selection
+	softSelect -e -softSelectEnabled 0;
+	
+	//Selection remembering, only Maya 2012 and above
+	if(`getApplicationVersionAsFloat` >= 2012)
+	{
+		//save current state of the option
+		optionVar -intValue "froRetopoSelectionChange" `selectPref -q -selectTypeChangeAffectsActive`;
+		
+		//disable it
+		selectPref -selectTypeChangeAffectsActive 0;
+	}
+	
+	//////////////////////////////////////////////////////////////
+	// Setup the tool
+	//////////////////////////////////////////////////////////////	
+	//selection to object to clean any selections and save the mesh name
+	froRetopoChangeSelMode(0); //object
+	
+	string $sel[] = `ls -sl`;
+	$savedMesh = $sel[0];
+	$savedVertexMesh = "";
+	
+	
+	//delete if already existing
+	if(`draggerContext -exists frovtxContext`)
+		deleteUI frovtxContext;
+	
+	//create the context
+	draggerContext
+		-undoMode "all"
+		-snapping false
+		-history false
+		-image1 "froyok/froretopo.png"
+		-cursor "crossHair" 
+		-dragCommand "frovtxContextDrag"
+		-pressCommand "frovtxContextPress"
+		-releaseCommand "frovtxContextRelease"
+		-space "world"
+		-projection "objectViewPlane"
+		frovtxContext;
+		
+		
+	setToolTo frovtxContext;
+	
+	froRetopoBuildHUD();
+}
+
+global proc froRetopoBuildHUD()
+{
+	//create a job to clear the UI when we change our tool
+	//kill it when changing the scene or removing the tool window
+	scriptJob -killWithScene -parent "WinfroRetopo" -replacePrevious -event "ToolChanged" "froRetopoKillHUD();";
+	
+	//Build HUD
+	if(`headsUpDisplay -ex froRetopoHUDquadtool`)
+		headsUpDisplay -rem froRetopoHUDquadtool;	
+		
+	if(`headsUpDisplay -ex froRetopoHUDquadtool2`)
+		headsUpDisplay -rem froRetopoHUDquadtool2;
+	
+	if(`headsUpDisplay -ex froRetopoHUDquadtool3`)
+		headsUpDisplay -rem froRetopoHUDquadtool3;	
+		
+	if(`headsUpDisplay -ex froRetopoHUDquadtool4`)
+		headsUpDisplay -rem froRetopoHUDquadtool4;	
+	
+	if(`headsUpDisplay -ex froRetopoHUDquadtool5`)
+		headsUpDisplay -rem froRetopoHUDquadtool5;	
+		
+	if(`headsUpDisplay -ex froRetopoHUDquadtool6`)
+		headsUpDisplay -rem froRetopoHUDquadtool6;	
+		
+	if(`headsUpDisplay -ex froRetopoHUDquadtool7`)
+		headsUpDisplay -rem froRetopoHUDquadtool7;
+	
+	headsUpDisplay
+		-allowOverlap 1
+		-labelFontSize    "large"
+		-dataFontSize	  	"large"
+		-command "froRetopoHUD"
+		-attachToRefresh
+		-s 3
+		-b 1
+		-label "LMB : Move vertex"
+		froRetopoHUDquadtool;	
+	
+	headsUpDisplay
+		-allowOverlap 1
+		-labelFontSize    "large"
+		-dataFontSize	  	"large"
+		-command "froRetopoHUD"
+		-attachToRefresh
+		-s 3
+		-b 2
+		-label "LMB + Ctrl : Extrude quad)"
+		froRetopoHUDquadtool2;	
+		
+	headsUpDisplay
+		-allowOverlap 1
+		-labelFontSize    "large"
+		-dataFontSize	  	"large"
+		-command "froRetopoHUD"
+		-attachToRefresh
+		-s 3
+		-b 3
+		-label "LMB + Shift : Insert middle edge loop"
+		froRetopoHUDquadtool3;
+		
+	headsUpDisplay
+		-allowOverlap 1
+		-labelFontSize    "large"
+		-dataFontSize	  	"large"
+		-command "froRetopoHUD"
+		-attachToRefresh
+		-s 3
+		-b 4
+		-label "LMB + Ctrl + Shift : Edge Extrude"
+		froRetopoHUDquadtool4;
+		
+	headsUpDisplay
+		-allowOverlap 1
+		-labelFontSize    "large"
+		-dataFontSize	  	"large"
+		-command "froRetopoHUD"
+		-attachToRefresh
+		-s 3
+		-b 5
+		-label "MMB : Delete face"
+		froRetopoHUDquadtool5;	
+		
+	headsUpDisplay
+		-allowOverlap 1
+		-labelFontSize    "large"
+		-dataFontSize	  	"large"
+		-command "froRetopoHUD"
+		-attachToRefresh
+		-s 3
+		-b 6
+		-label "MMB + Ctrl : Fill hole"
+		froRetopoHUDquadtool6;
+		
+	headsUpDisplay
+		-allowOverlap 1
+		-labelFontSize    "large"
+		-dataFontSize	  	"large"
+		-command "froRetopoHUD"
+		-attachToRefresh
+		-s 3
+		-b 7
+		-label "MMB + Shift : Delete edge loop"
+		froRetopoHUDquadtool7;
+}
+
+global proc string froRetopoHUD()
+{
+	return "";
+}
+
+global proc froRetopoKillHUD()
+{	
+	if(`currentCtx` != "frovtxContext")
+	{
+		//kill HUD message
+		if(`headsUpDisplay -ex froRetopoHUDquadtool`)
+			headsUpDisplay -rem froRetopoHUDquadtool;	
+			
+		if(`headsUpDisplay -ex froRetopoHUDquadtool2`)
+			headsUpDisplay -rem froRetopoHUDquadtool2;
+			
+		if(`headsUpDisplay -ex froRetopoHUDquadtool3`)
+			headsUpDisplay -rem froRetopoHUDquadtool3;		
+			
+		if(`headsUpDisplay -ex froRetopoHUDquadtool4`)
+			headsUpDisplay -rem froRetopoHUDquadtool4;		
+		
+		if(`headsUpDisplay -ex froRetopoHUDquadtool5`)
+			headsUpDisplay -rem froRetopoHUDquadtool5;		
+			
+		if(`headsUpDisplay -ex froRetopoHUDquadtool6`)
+			headsUpDisplay -rem froRetopoHUDquadtool6;		
+			
+		if(`headsUpDisplay -ex froRetopoHUDquadtool7`)
+			headsUpDisplay -rem froRetopoHUDquadtool7;
+	}
+	
+	//Selection remembering, only Maya 2012 and above
+	if(`getApplicationVersionAsFloat` >= 2012)
+	{
+		//put back the user setting state
+		selectPref -selectTypeChangeAffectsActive `optionVar -q "froRetopoSelectionChange"`;
+	}
+}
+
+
+//Dragger :
+//Move the extruded vertex where the mouse is currently.
+global proc frovtxContextDrag()
+{
+	global string $savedVertexMesh;
+	global string $savedMesh;
+	global string $defaultlive;
+	global int $savedBuildmode;
+	
+	
+	float $pos[3] = `draggerContext -q -dragPoint frovtxContext`;
+	float $cam[3] = `camera -q -position persp`;
+	
+	string $button = `draggerContext -q -modifier frovtxContext`;
+	int $mouse = `draggerContext -q -button frovtxContext`;
+	
+	string $sel[] = `ls -sl`;
+	
+	if(size($sel) == 0)
+	{		
+		select -r $savedMesh;
+		$sel = `ls -sl`;
+	}
+	
+	
+	////////////////////////////////////////////////////////////////////////////
+	//
+	// If a vertex/edge is selected, we move it
+	//
+	////////////////////////////////////////////////////////////////////////////
+	if(size(`filterExpand -sm 31`) == 1 && size(`filterExpand -sm 34`) == 0) //vertex
+	{
+		// if(froRetopoGetLive() != $defaultlive)
+		if("" != $defaultlive)
+		{
+			//raytrace
+			float $savedPos[4] = `froRayTrace -dp $pos[0] $pos[1] $pos[2] (froRetopoGetLive())`;
+			// float $savedPos[4] = { 1.0, $pos[0], $pos[1], $pos[2] };
+			
+			//avoid missed raytrace
+			if(!$savedPos[0])
+			{
+				// print("froRaytrace faillure\n");
+				return;
+			}
+			
+			if(`objExists $savedVertexMesh`)
+			{
+				select -r $savedMesh;
+				froRetopoChangeSelMode(1); //vtx
+				select -add $savedVertexMesh;
+				hilite $savedMesh;
+			}
+			else
+				return;
+			
+			
+			
+			if(`checkBox -q -v froRetopo_check_snap`) //snap enabled ?
+			{
+				float $tol = `floatField -q -v froRetopo_field_snaptol`; //query current tolerance
+				
+				//Snap the current point
+					//AXIS X
+				if(`checkBox -q -v froRetopo_check_snap_x`)
+				{
+					if( $savedPos[1] <= $tol && $savedPos[1] >= (-1 * $tol) )
+						$savedPos[1] = 0;
+				}
+				
+					//AXIS Y
+				if(`checkBox -q -v froRetopo_check_snap_y`)
+				{
+					if( $savedPos[2] <= $tol && $savedPos[2] >= (-1 * $tol) )
+						$savedPos[2] = 0;
+				}
+				
+					//AXIS Z
+				if(`checkBox -q -v froRetopo_check_snap_z`)
+				{
+					if( $savedPos[3] <= $tol && $savedPos[3] >= (-1 * $tol) )
+						$savedPos[3] = 0;
+				}
+			}
+			
+			move -ws $savedPos[1] $savedPos[2] $savedPos[3];
+	
+			//use the flag force to update current viewport, otherwise we 
+			//can't see the vertex moving under the mouse
+			// refresh -f -cv;
+			// refresh -suspend false;
+			// refresh -f -cv;
+			// refresh -suspend true;
+		}
+	}
+	else if(size(`filterExpand -sm 31`) == 0 && size(`filterExpand -sm 32`) == 1) //edges
+	{		
+		if(froRetopoGetLive() != $defaultlive)
+		{
+			// return;
+			
+			//raytrace
+			float $savedPos[4] = `froRayTrace -dp $pos[0] $pos[1] $pos[2] (froRetopoGetLive())`;
+			// float $savedPos[4] = { 1.0, $pos[0], $pos[1], $pos[2] };
+			
+		//avoid missed raytrace
+		if(!$savedPos[0])
+		{
+			// print("froRaytrace faillure\n");
+			return;
+		}
+			
+			if(`objExists $savedVertexMesh`)
+			{
+				select -r $savedMesh;
+				froRetopoChangeSelMode(2); //edge
+				select -add $savedVertexMesh;
+				hilite $savedMesh;
+			}
+			else
+				return;
+			
+			//get the vertices of the edge
+			string $vt[] = `polyInfo -edgeToVertex $savedVertexMesh`;
+			string $tokens[];
+			tokenize $vt[0] " :\n\r" $tokens;
+			
+			string $fv[2];
+			int $i = 0;
+			
+			for($v in $tokens)
+			{
+				if($v != "EDGE" && $v != "Hard")
+				{
+					$fv[$i] = $savedMesh + ".vtx[" + $v + "]";
+					$i += 1;
+				}
+			}
+			
+			if($fv[0] == "")
+				error("No vertex to move");
+			
+		//compute relative vertex positions
+			float $p1[3] = `xform -q -ws -t $fv[0]`;
+			float $p2[3] = `xform -q -ws -t $fv[1]`;
+			
+			float $pc[3]; //center point from vertex
+			$pc[0] = ($p1[0] + $p2[0]) / 2;
+			$pc[1] = ($p1[1] + $p2[1]) / 2;
+			$pc[2] = ($p1[2] + $p2[2]) / 2;
+			
+			float $n1[3] = $p1; //relative positions
+			float $n2[3] = $p2;
+			
+			$n1[0] -= $pc[0]; //substract midle to get relative
+			$n1[1] -= $pc[1];
+			$n1[2] -= $pc[2];
+			
+			$n2[0] -= $pc[0];
+			$n2[1] -= $pc[1];
+			$n2[2] -= $pc[2];
+			
+		//add raytrace position
+			$n1[0] += $savedPos[1];
+			$n1[1] += $savedPos[2];
+			$n1[2] += $savedPos[3];
+			
+			$n2[0] += $savedPos[1];
+			$n2[1] += $savedPos[2];
+			$n2[2] += $savedPos[3];
+			
+		//move the vertices in worldspace
+			move -a -ws $n1[0] $n1[1] $n1[2] $fv[0];
+			move -a -ws $n2[0] $n2[1] $n2[2] $fv[1];
+	
+			//use the flag force to update current viewport, otherwise we 
+			//can't see the vertex moving under the mouse
+			// refresh -f -cv;
+			// refresh -suspend false;
+			// refresh -f -cv;
+			// refresh -suspend true;
+		}
+	}
+	////////////////////////////////////////////////////////////////////////////
+	//
+	// Nothing selected ? Find nearest vertex/edge from the click and extrude it
+	//
+	////////////////////////////////////////////////////////////////////////////
+	// else if(size($sel) != 0 && froRetopoGetLive() != $defaultlive)
+	else if(size($sel) != 0 && "" != $defaultlive && $savedBuildmode == 0)
+	{		
+		//face selected ? Ignore input, it's probalby from middle click
+		if(size(`filterExpand -sm 34`) != 0 || $mouse == 2)
+			return;
+			
+		//raytrace
+		float $savedPos[4] = `froRayTrace -dp $pos[0] $pos[1] $pos[2] (froRetopoGetLive())`;
+		// float $savedPos[4] = { 1.0, $pos[0], $pos[1], $pos[2] };
+		
+		//avoid missed raytrace
+		if(!$savedPos[0])
+		{
+			// print("froRaytrace faillure\n");
+			return;
+		}
+		
+		
+		select -r $sel[0];
+		
+		//create closestPoint node and connect the mesh
+		string $CPOM = `createNode closestPointOnMesh`;
+		
+		int $index = 0;
+
+		connectAttr -f ($sel[0] + ".outMesh") ( $CPOM + ".inMesh");
+		
+		//specify the start Pos (from raytrace on live mesh)
+		setAttr ($CPOM + ".inPositionX") $savedPos[1];
+		setAttr ($CPOM + ".inPositionY") $savedPos[2];
+		setAttr ($CPOM + ".inPositionZ") $savedPos[3];
+		
+		//get the vertex number
+		$index = `getAttr ($CPOM + ".closestVertexIndex")`;
+		delete $CPOM;
+
+		//check if vertex exists, otherwise we quit
+		if(!`objExists ($sel[0] + ".vtx[" + $index + "]")`)
+			return;
+		
+		//select the vertex
+		select -r $sel[0];
+		froRetopoChangeSelMode(1);
+		select -add ($sel[0] + ".vtx[" + $index + "]");
+		
+
+		
+	//decide which extrude to do
+		//left mouse click
+		if($mouse == 1)
+		{
+			print $button;
+			print "\n";
+			
+			int $mods = `getModifiers`;
+			if($button == "ctrl" && ($mods % 2)) //shift pressed ?
+			{
+				froRetopoExtrudeEdge($sel[0] + ".vtx[" + $index + "]", $savedPos[1], $savedPos[2], $savedPos[3]);
+				$savedBuildmode = 1;
+			}
+			else if($button == "ctrl")
+			{
+				
+				froRetopoExtrudeVertex();
+				$savedBuildmode = 1;
+				
+			}
+			else 
+				$savedVertexMesh = ($sel[0] + ".vtx[" + $index + "]");
+		}
+
+
+	}
+	
+	
+	currentTime -e 1;
+}
+
+//Press context
+//Called before dragger, find the near vertex, select it, and extrude a quad
+global proc frovtxContextPress()
+{
+
+	global string $savedVertexMesh;
+	global string $savedMesh;
+	global string $defaultlive;
+	global int $savedBuildmode;
+	
+	
+	// refresh -suspend true;
+	
+	
+	$savedBuildmode = 0;
+	
+	//disable undo
+	undoInfo -openChunk;
+	
+	//dragger context
+	float $pos[3] = `draggerContext -q -anchorPoint frovtxContext`;
+	string $button = `draggerContext -q -modifier frovtxContext`;
+	int $mouse = `draggerContext -q -button frovtxContext`;
+	
+	string $sel[] = `ls -sl`;
+	
+	if(size($sel) == 0)
+	{		
+		select -r $savedMesh;
+		$sel = `ls -sl`;
+	}
+
+	//left click + shift
+	if($mouse == 1)
+	{
+		if($button == "shift" && $savedBuildmode == 0) //shift only pressed ?
+		{
+			float $savedPos[4] = `froRayTrace -dp $pos[0] $pos[1] $pos[2] (froRetopoGetLive())`;
+			// float $savedPos[4] = { 1.0, $pos[0], $pos[1], $pos[2] };
+			
+			//avoid missed raytrace
+			if($savedPos[0])
+			{
+				//create closestPoint node and connect the mesh
+				string $CPOM = `createNode closestPointOnMesh`;
+				
+				int $index = 0;
+
+				connectAttr -f ($sel[0] + ".outMesh") ( $CPOM + ".inMesh");
+				
+				//specify the start Pos (from raytrace on live mesh)
+				setAttr ($CPOM + ".inPositionX") $savedPos[1];
+				setAttr ($CPOM + ".inPositionY") $savedPos[2];
+				setAttr ($CPOM + ".inPositionZ") $savedPos[3];
+				
+				//get the vertex number
+				$index = `getAttr ($CPOM + ".closestVertexIndex")`;
+				delete $CPOM;		
+
+				$savedBuildmode = 1;
+				
+				if(`objExists ($savedMesh + ".vtx[" + $index + "]")`)
+						froRetopoEdgeLoop($savedMesh + ".vtx[" + $index + "]", $savedPos[1], $savedPos[2], $savedPos[3] );
+				else
+					$savedBuildmode = 0;
+			}
+			
+		}
+	}
+	
+	
+	
+	//middle click
+	if($mouse == 2)
+	{
+		if($button == "shift" && $savedBuildmode == 0) //shift only pressed ?
+		{
+			float $savedPos[4] = `froRayTrace -dp $pos[0] $pos[1] $pos[2] (froRetopoGetLive())`;
+			// float $savedPos[4] = { 1.0, $pos[0], $pos[1], $pos[2] };
+			
+			//avoid missed raytrace
+			if($savedPos[0])
+			{
+				//create closestPoint node and connect the mesh
+				string $CPOM = `createNode closestPointOnMesh`;
+				
+				int $index = 0;
+
+				connectAttr -f ($sel[0] + ".outMesh") ( $CPOM + ".inMesh");
+				
+				//specify the start Pos (from raytrace on live mesh)
+				setAttr ($CPOM + ".inPositionX") $savedPos[1];
+				setAttr ($CPOM + ".inPositionY") $savedPos[2];
+				setAttr ($CPOM + ".inPositionZ") $savedPos[3];
+				
+				//get the vertex number
+				$index = `getAttr ($CPOM + ".closestVertexIndex")`;
+				delete $CPOM;		
+
+				$savedBuildmode = 1;
+				
+				if(`objExists ($savedMesh + ".vtx[" + $index + "]")`)
+						froRetopoDeleteEdgeLoop($savedMesh + ".vtx[" + $index + "]", $savedPos[1], $savedPos[2], $savedPos[3] );
+				else
+					$savedBuildmode = 0;
+			}
+			
+		}
+		else if(size(`filterExpand -sm 34`) == 0 && $savedBuildmode == 0) //call only if no face selected) 
+		{		
+			float $savedPos[4] = `froRayTrace -dp $pos[0] $pos[1] $pos[2] (froRetopoGetLive())`;
+			// float $savedPos[4] = { 1.0, $pos[0], $pos[1], $pos[2] };
+			
+			//avoid missed raytrace
+			if(!$savedPos[0])
+			{
+				// print("froRaytrace faillure\n");
+				return;
+			}
+			
+			//create closestPoint node and connect the mesh
+			string $CPOM = `createNode closestPointOnMesh`;
+			
+			int $index = 0;
+
+			connectAttr -f ($sel[0] + ".outMesh") ( $CPOM + ".inMesh");
+			
+			//specify the start Pos (from raytrace on live mesh)
+			setAttr ($CPOM + ".inPositionX") $savedPos[1];
+			setAttr ($CPOM + ".inPositionY") $savedPos[2];
+			setAttr ($CPOM + ".inPositionZ") $savedPos[3];
+			
+			//get the vertex number
+			$index = `getAttr ($CPOM + ".closestVertexIndex")`;
+			delete $CPOM;		
+
+			$savedBuildmode = 1;
+			
+			// int $mods = `getModifiers`;
+			if( $button == "ctrl" )
+			{
+				if(`objExists ($savedMesh + ".vtx[" + $index + "]")`)
+					froRetopoEdgeFillHole($savedMesh + ".vtx[" + $index + "]", $savedPos[1], $savedPos[2], $savedPos[3] );
+			}
+			else
+			{
+				if(`objExists ($savedMesh + ".vtx[" + $index + "]")`)
+					froRetopoQuadDeleteFace($savedMesh + ".vtx[" + $index + "]", $savedPos[1], $savedPos[2], $savedPos[3] );
+			}
+		}
+	}
+}
+
+
+global proc frovtxContextRelease()
+{
+	global string $savedMesh;
+	global string $savedVertexMesh;
+	global int $savedBuildmode;
+
+	$startTime = `timerX`;
+
+	
+	//check for merging the vertex
+	if(`checkBox -q -v froRetopo_check_weldextrude`)
+	{
+		//one vertex is selected ?
+		if(size(`filterExpand -sm 31`) == 1)
+		{
+			//merge it
+			froRetopoTargetWeld();
+		}
+	}
+	
+	if(`checkBox -q -v froRetopo_check_edgeproject`)
+	{
+		//edge selected ? Projetc it
+		if(size(`filterExpand -sm 32`) == 1)
+		{
+			
+			//get the vertices of the edge
+			string $vt[] = `polyInfo -edgeToVertex $savedVertexMesh`;
+			string $tokens[];
+			tokenize $vt[0] " :\n\r" $tokens;
+			
+			string $fv[2];
+			int $i = 0;
+			
+			for($v in $tokens)
+			{
+				if($v != "EDGE" && $v != "Hard")
+				{
+					$fv[$i] = $savedMesh + ".vtx[" + $v + "]";
+					$i += 1;
+				}
+			}
+			
+			//select, check and project
+			select -cl;
+			
+			//project
+			if(`objExists $fv[0]`)
+			{
+				//project
+				float $pos[3] = `pointPosition -world $fv[0]`;
+				spaceLocator -name "fror_loc_temp";
+				move -ws $pos[0] $pos[1] $pos[2] "fror_loc_temp";
+				
+				geometryConstraint -w 1.0 -name "fror_cons" ( froRetopoGetLive() ) "fror_loc_temp";
+				
+				$pos = `pointPosition -world "fror_loc_temp"`;
+				delete "fror_cons";
+				delete "fror_loc_temp";
+				
+				move -ws $pos[0] $pos[1] $pos[2] $fv[0];
+				
+				//weld ?
+				if(`checkBox -q -v froRetopo_check_weldextrude`)
+				{
+					select -r $fv[0];
+					froRetopoTargetWeld();
+				}
+			}
+			
+			if(`objExists $fv[1]`)
+			{
+				//project
+				float $pos[3] = `pointPosition -world $fv[1]`;
+				spaceLocator -name "fror_loc_temp";				
+				move -ws $pos[0] $pos[1] $pos[2] "fror_loc_temp";	
+				
+				geometryConstraint -w 1.0 -name "fror_cons" ( froRetopoGetLive() ) "fror_loc_temp";
+				
+				$pos = `pointPosition -world "fror_loc_temp"`;
+				delete "fror_cons";
+				delete "fror_loc_temp";
+				
+				move -ws $pos[0] $pos[1] $pos[2] $fv[1];
+				
+				//weld ?
+				if(`checkBox -q -v froRetopo_check_weldextrude`)
+				{
+					select -r $fv[1];
+					froRetopoTargetWeld();
+				}
+			}
+
+		}
+	}
+	else if(`checkBox -q -v froRetopo_check_weldextrude`)
+	{
+		//edge selected ? 
+		if(size(`filterExpand -sm 32`) == 1)
+		{
+			//get the vertices of the edge
+			string $vt[] = `polyInfo -edgeToVertex $savedVertexMesh`;
+			string $tokens[];
+			tokenize $vt[0] " :\n\r" $tokens;
+			
+			string $fv[2];
+			int $i = 0;
+			
+			for($v in $tokens)
+			{
+				if($v != "EDGE" && $v != "Hard")
+				{
+					$fv[$i] = $savedMesh + ".vtx[" + $v + "]";
+					$i += 1;
+				}
+			}
+			
+			//merge
+			if(`objExists $fv[0]`)
+			{
+				select -r $fv[0];
+				froRetopoTargetWeld();
+			}
+			
+			if(`objExists $fv[1]`)
+			{
+				select -r $fv[1];
+				froRetopoTargetWeld();
+			}
+		}
+	}
+	
+	//delete history to increase performances
+	selectMode -object;
+	
+	if(`checkBox -q -v froRetopo_checkSoften`)
+		SoftPolyEdgeElements 1;
+		
+	DeleteHistory;
+	
+	//clean selection
+	select -r $savedMesh;
+	$savedVertexMesh = "";
+	
+	
+	//selection to object mode then vertex mode
+	froRetopoChangeSelMode(0); //object
+	
+	//enable undo again
+	undoInfo -closeChunk;
+	
+	//reset construction mode
+	$savedBuildmode = 0;
+
+	setToolTo frovtxContext;
+
+	//viewport refresh, workaround to avoid 
+	//the crashes with the "refresh" command
+	currentTime -e 1;
+	
+	// code that is being timed
+	$totalTime = `timerX -startTime $startTime`;
+	print ("Projection time : " + $totalTime);
+}
+
+
+
+//Vertex extrude
+global proc froRetopoExtrudeVertex()
+{
+	global string $savedVertexMesh;
+			
+	//List selection
+	//	-sl = selection
+	//	-l  = long name (full name instead of shortcut ones)
+	//	-fl = Flattens the returned list of objects so that each component is identified individually
+	if($savedVertexMesh == "")
+	{
+		string $sel[] = `ls -sl -l -fl`;
+		
+		if(size($sel) == 1)
+		{
+			float $pos[] = `pointPosition -w $sel[0]`; //get the vertex position
+			resetPolySelectConstraint; //reset selectionconstraint options
+			
+			selectType -ocm -polymeshEdge true; //selectionMode "Edge"
+			$edges = `polyListComponentConversion -te $sel`; //get Edges
+			select $edges; //select Edges
+			
+			polySelectConstraint -t 0x8000 -m 2 -w 1; //SelectionConstraint -> edge -> current and next -> border edges
+			$border = `ls -sl -l -fl`; //List selected (dvs. borderEdges)
+			
+			select $border; //select border
+			resetPolySelectConstraint; //reset selectionconstraint options
+			
+			if(`objExists $border[0]` && `objExists $border[1]`)
+			{
+				polyExtrudeEdge -ch 1 -kft 1 $border[0] $border[1]; //extrude borderEdgesw
+				$verts = `polyListComponentConversion -tv`; //convert to vertices
+
+				select $verts; //select vertices and merge to center
+				polyMergeToCenter;
+
+				$vert = `ls -sl -l -fl`; //list remaining vertex
+				$splitEdge = `polyListComponentConversion -te $vert`; //convert to edges
+				select $splitEdge; //select the edge that split the "quadToBe"
+
+				selectType -ocm -polymeshEdge true; //selectionMode "Edge"
+				polySelectConstraint -t 0x8000 -m 2 -w 2; //SelectionConstraint -> edge -> current and next -> internal edges
+
+				resetPolySelectConstraint; //reset selectionconstraint options
+				$inside = `ls -sl -l -fl`; //list the internal edge
+				select $inside; //select internal edge
+
+				doDelete; //delete it
+				move $pos[0] $pos[1] $pos[2] $vert[0]; //move the remaining vertex to the 1st vtx position
+
+				selectType -ocm -polymeshVertex true; //selectionMode "Vertex"
+				select $vert; //select the new vertex
+
+				//save for the tool
+				$savedVertexMesh = $vert[0];
+				
+				//clean construction
+				string $sel[] = `ls -sl -l -fl`;
+				string $v = $sel[0]; //get vertex
+				
+				selectMode -object;
+				DeleteHistory;
+				// print "History Deleted...\n";
+				string $selCur[] = `ls -sl -l -fl`;
+
+				selectMode -component;
+				selectType -ocm -polymeshVertex true; //selectionMode "Vertex"
+				select -r $v; //select the new vertex
+			}
+			else
+			{
+				print "No border vertex to extrude.\n";
+				resetPolySelectConstraint; //reset selectionconstraint options
+			}
+		}
+		else if(size($sel) == 0)
+			error "Nothing selected, please select ONE vertex.";
+		else
+			error "Please select only ONE vertex.";								
+	}
+}
+
+//arg : vertex name under mouse and mouse position
+//this fucntion retrieve the face udner the mouse to delete it
+global proc froRetopoQuadDeleteFace(string $vn, float $x, float $y, float $z)
+{
+	global string $savedMesh;
+	
+	//select the vertex and get the connected faces
+	select -r $vn;
+	string $faces[] = `polyInfo -vertexToFace $vn`;
+	
+	//clean the array
+	string $tokens[];
+	tokenize $faces[0] " :\n\r" $tokens;
+	
+	select -cl;
+	
+	//test distance
+	float $dist = 0; //distance
+	vector $r;
+	vector $p =  << $x, $y, $z >>;
+	string $fd = "";
+
+	for($f in $tokens)
+	{
+		if($f != "VERTEX")
+		{
+			select -r ($savedMesh + ".f[" + $f + "]");
+			
+			string $verts[] = `polyInfo -fv ($savedMesh + ".f[" + $f + "]")`;
+			string $vert[] = stringToStringArray($verts[0],	"FACE :");
+			string $obj[] = `ls -sl -objectsOnly`;
+
+			int $numVerts = (`size ($vert)`-2);
+
+			float $px = 0;
+			float $py = 0;
+			float $pz = 0;
+
+			for ($i=1; $i< ($numVerts+1); $i++)
+			{
+				string $vertID = ($obj[0]+".vtx["+$vert[$i]+"]");
+				float $pos[] = `xform -q -ws -t $vertID`;
+				$px += $pos[0];
+				$py += $pos[1];
+				$pz += $pos[2];
+			}
+
+			vector $center = << ($px / $numVerts), ($py / $numVerts), ($pz / $numVerts) >>;
+
+					
+		// spaceLocator -p ($px / $numVerts) ($py / $numVerts) ($pz / $numVerts);
+			
+			$r = $p - $center;
+			
+			if($dist == 0)
+			{
+				$fd = ($savedMesh + ".f[" + $f + "]");
+				$dist = mag($r);
+			}
+			else if($dist > mag($r))
+			{
+				$fd = ($savedMesh + ".f[" + $f + "]");
+				$dist = mag($r);
+			}
+		}
+	}
+
+	//delete the closest face
+	if($fd != "")
+	{
+		delete $fd;
+	}
+	//else
+	//	print "No face to delete";
+	
+	
+	select -r $savedMesh;
+}
+
+
+//arg : vertex name under mouse and mouse position
+//this fucntion retrieve the nearest edge border udner the mouse and fill the hole with quadrangulation
+global proc froRetopoEdgeFillHole(string $vn, float $x, float $y, float $z)
+{
+	global string $savedMesh;
+
+	//select the vertex and get the connected faces
+	select -r $vn;
+	
+	selectType -ocm -polymeshEdge true; //selectionMode "Edge"
+	$edges = `polyListComponentConversion -te $vn`; //get Edges
+	select $edges; //select Edges
+	
+	polySelectConstraint -t 0x8000 -m 2 -w 1; //SelectionConstraint -> edge -> current and next -> border edges
+	$border = `ls -sl -l -fl`; //List selected (dvs. borderEdges)
+	
+	select $border; //select border
+	resetPolySelectConstraint; //reset selectionconstraint options
+	
+	if(`objExists $border[0]`)
+	{
+		//select the border to fill
+		select -r $border[0];
+		
+		//loop
+		polySelectSp -loop;
+	
+		// Close empty loop
+		polyCloseBorder -constructionHistory 1;
+
+		// add divisions 
+		polyTriangulate -constructionHistory 1;
+		polyQuad -constructionHistory 1 -keepGroupBorder 1 -keepTextureBorders 1;
+	}
+	else
+		error("No borders found for the fill hole.");
+	
+	select -r $savedMesh;
+}
+
+
+global proc froRetopoExtrudeEdge(string $vn, float $x, float $y, float $z)
+{
+	global string $savedVertexMesh;
+	global string $savedMesh;
+	
+//select the vertex and get the connected edges border
+	select -r $vn;
+	
+	selectType -ocm -polymeshEdge true; //selectionMode "Edge"
+	$edges = `polyListComponentConversion -te $vn`; //get Edges
+	select $edges; //select Edges
+	
+	polySelectConstraint -t 0x8000 -m 2 -w 1; //SelectionConstraint -> edge -> current and next -> border edges
+	$border = `ls -sl -l -fl`; //List selected (dvs. borderEdges)
+	
+	select $border; //select border
+	resetPolySelectConstraint; //reset selectionconstraint options
+	
+	if(`objExists $border[0]`)
+	{	
+		select -r $border; //select borders
+	
+		//get the vertices from the edge borders
+		$vtcs = `polyListComponentConversion -tv $border`; //get vertex
+		select -r $vtcs;
+		string $selv[] = `ls -sl -fl`; //convert the list
+		
+		//get the nearest vertex (based on middle edge position)
+		string $nearv;
+		vector $mouse =  << $x, $y, $z >>;
+		vector $r;
+		float $dist = 0;
+		float $pvn[3] = `xform -q -ws -t $vn`;
+		
+		for($v in $selv)
+		{
+			// print("vertex = " + $v + "\n");
+			
+			if($v != $vn) //ignore vertex if original click
+			{
+				float $p2[3] = `xform -q -ws -t $v`;
+				
+				float $pc[3];
+				$pc[0] = ($p2[0] +  $pvn[0]) / 2;
+				$pc[1] = ($p2[1] +  $pvn[1]) / 2;
+				$pc[2] = ($p2[2] +  $pvn[2]) / 2;
+				
+				vector $vp2 = << $pc[0], $pc[1], $pc[2] >>;
+		
+				$r = $mouse - $vp2;
+				
+				if($dist != 0)
+				{
+					if($dist > mag($r))
+					{
+						$nearv = $v;
+						$dist = mag($r);
+					}
+				}
+				else
+				{
+					$nearv = $v;
+					$dist = mag($r);
+				}
+			}
+		}		
+		
+		//get the edges from the vertices
+		if($nearv != "")
+		{
+			//select the vertices
+			select -r $vn;
+			select -add $nearv;
+			
+			//get the shared edges
+			string $ed1[] = `polyInfo -vertexToEdge $vn`;
+			string $tokens1[];
+			tokenize $ed1[0] " :\n\r" $tokens1;
+			
+			string $ed2[] = `polyInfo -vertexToEdge $nearv`;
+			string $tokens2[];
+			tokenize $ed2[0] " :\n\r" $tokens2;
+			
+			string $edn = "";
+			
+			//isolate and save our edge
+			for($t in $tokens1)
+			{
+				if($t != "VERTEX")
+				{					
+					for($e in $tokens2)
+					{
+						if($e != "VERTEX")
+						{
+							//compare arrays
+							if($t == $e)
+							{
+								$edn = ($savedMesh + ".e[" + $e + "]"); //save
+							}
+						}
+					}
+				}
+			}
+			
+			//select our edge
+			if($edn != "")
+			{
+				selectType -ocm -polymeshEdge true; //selectionMode "Edge"
+				select -r $edn;
+				
+				//extrude it (1 division, edges togethers enabled)
+				polyExtrudeEdge -d 1 -kft 0;
+				
+				//save its name
+				string $sel[] = `ls -sl -fl`;
+				$savedVertexMesh = $sel[0];
+			}
+			
+		}
+		
+	}
+}
+
+
+global proc froRetopoTargetWeld()
+{
+	string $hl[] = `ls -hl`;
+	string $sel[] = `ls -sl`;
+	float $range = `floatField -q -v froRetopo_field_snapweld`;
+
+	//isolate vertex index
+	string $buffer[];
+	tokenize $sel[0] "[" $buffer;
+	tokenize $buffer[1] "]" $buffer;
+	int $index = int($buffer[0]);
+
+	//select the mesh to compute its vertex list in the python plugin
+	string $mesh = "";
+
+	if(size($hl))
+		$mesh = $hl[0];
+	else
+	{
+		tokenize $sel[0] "." $buffer;
+		$mesh = $buffer[0];
+	}
+
+	select -r $mesh;
+
+	//call the python command and get the nearest vertex index
+	float $result[] = `froVertexFinder -fid $index -frg $range`;
+
+	//found a vertex ?
+	if($result[0])
+	{
+		select -r $sel[0];
+
+		//vertex name
+		string $target = ($mesh + ".vtx[" + int($result[1]) + "]");
+
+		//target position
+		float $array[3] = `pointPosition -world $target`;
+		move -ws $array[0] $array[1] $array[2] $sel[0];
+
+		//merge
+		select -add $target;
+		polyMergeVertex  -d 0.2 -ch 1;
+
+		select -r $mesh;
+	}
+	else
+		select -r $mesh;
+}
+
+
+
+global proc froRetopoEdgeLoop(string $vn, float $x, float $y, float $z)
+{
+	global string $savedVertexMesh;
+	global string $savedMesh;
+	string $edn = "";
+	
+	//select the vertex and get the connected edges
+	select -r $vn;
+	
+	selectMode -q -component;
+	
+	//convert edges to vertices
+	PolySelectConvert 2;
+	
+	//convert edges to vertices
+	PolySelectConvert 3;
+	
+	// selectType -ocm -polymeshEdge true; //selectionMode "Edge"
+	string $vtcs[] = `ls -sl -fl`; //get Edges
+	select -r $vtcs; //select Edges
+
+	//get the nearest vertex (based on middle edge position)
+	string $nearv = "";
+	vector $mouse =  << $x, $y, $z >>;
+	vector $r;
+	float $dist = 0;
+	float $pvn[3] = `xform -q -ws -t $vn`;
+	
+	
+	for($v in $vtcs)
+	{
+		if($v != $vn) //ignore vertex if original click
+		{
+			float $p2[3] = `xform -q -ws -t $v`;
+			
+			
+			float $pc[3];
+			$pc[0] = ($p2[0] +  $pvn[0]) / 2;
+			$pc[1] = ($p2[1] +  $pvn[1]) / 2;
+			$pc[2] = ($p2[2] +  $pvn[2]) / 2;
+			
+			vector $vp2 = << $pc[0], $pc[1], $pc[2] >>;
+	
+			$r = $mouse - $vp2;
+			
+			if($dist != 0)
+			{
+				if($dist > mag($r))
+				{
+					$nearv = $v;
+					$dist = mag($r);
+				}
+			}
+			else
+			{
+				$nearv = $v;
+				$dist = mag($r);
+			}
+		}
+	}
+
+	
+	//get the edges from the vertices
+	if($nearv != "")
+	{
+		//select the vertices
+		select -r $vn;
+		select -add $nearv;
+		
+		//get the shared edges
+		string $ed1[] = `polyInfo -vertexToEdge $vn`;
+		string $tokens1[];
+		tokenize $ed1[0] " :\n\r" $tokens1;
+		
+		string $ed2[] = `polyInfo -vertexToEdge $nearv`;
+		string $tokens2[];
+		tokenize $ed2[0] " :\n\r" $tokens2;
+		
+		//isolate and save our edge
+		for($t in $tokens1)
+		{
+			if($t != "VERTEX")
+			{					
+				for($e in $tokens2)
+				{
+					if($e != "VERTEX")
+					{
+						//compare arrays
+						if($t == $e)
+						{
+							$edn = ($savedMesh + ".e[" + $e + "]"); //save
+						}
+					}
+				}
+			}
+		}
+	}
+	
+	
+	//select our edge
+	if($edn != "")
+	{
+		selectType -ocm -polymeshEdge true; //selectionMode "Edge"
+		select -r $edn;
+		
+		//edge ring
+		polySelectSp -ring;
+		polySplitRing -stp 2 -div 1;
+
+		string $list[] = `ls -sl -fl`;
+		string $edgelist[] = `filterExpand -ex 1 -sm 32`;
+		
+		//convert edges to vertices
+		PolySelectConvert 3;
+		string $vtx[] = `filterExpand -ex 1 -sm 31`;
+		
+		//snap to the surface
+		transferAttributes -transferPositions 1 -searchMethod 3 (froRetopoGetLive()) $vtx;
+		
+		
+		//old method, too slow
+		/*
+			string $e = "";
+			spaceLocator -name "fror_loc_temp";
+			for($e in $vtx)
+			{
+				//project
+				float $pos[3] = `pointPosition -world $e`;
+				move -ws $pos[0] $pos[1] $pos[2] "fror_loc_temp";
+				
+				geometryConstraint -w 1.0 -name "fror_cons" ( froRetopoGetLive() ) "fror_loc_temp";
+				
+				$pos = `pointPosition -world "fror_loc_temp"`;
+				delete "fror_cons";
+				
+				move -ws $pos[0] $pos[1] $pos[2] $e;
+			}
+		*/
+	}
+	
+	
+	//done, reselect mesh
+	$savedVertexMesh = "";
+	select -r $savedMesh;
+}
+
+
+
+
+global proc froRetopoDeleteEdgeLoop(string $vn, float $x, float $y, float $z)
+{
+	global string $savedVertexMesh;
+	global string $savedMesh;
+	string $edn = "";
+	
+	//select the vertex and get the connected edges
+	select -r $vn;
+	
+	selectMode -q -component;
+	
+	//convert edges to vertices
+	PolySelectConvert 2;
+	
+	//convert edges to vertices
+	PolySelectConvert 3;
+	
+	// selectType -ocm -polymeshEdge true; //selectionMode "Edge"
+	string $vtcs[] = `ls -sl -fl`; //get Edges
+	select -r $vtcs; //select Edges
+
+	//get the nearest vertex (based on middle edge position)
+	string $nearv = "";
+	vector $mouse =  << $x, $y, $z >>;
+	vector $r;
+	float $dist = 0;
+	float $pvn[3] = `xform -q -ws -t $vn`;
+	
+	
+	for($v in $vtcs)
+	{
+		if($v != $vn) //ignore vertex if original click
+		{
+			float $p2[3] = `xform -q -ws -t $v`;
+			
+			
+			float $pc[3];
+			$pc[0] = ($p2[0] +  $pvn[0]) / 2;
+			$pc[1] = ($p2[1] +  $pvn[1]) / 2;
+			$pc[2] = ($p2[2] +  $pvn[2]) / 2;
+			
+			vector $vp2 = << $pc[0], $pc[1], $pc[2] >>;
+	
+			$r = $mouse - $vp2;
+			
+			if($dist != 0)
+			{
+				if($dist > mag($r))
+				{
+					$nearv = $v;
+					$dist = mag($r);
+				}
+			}
+			else
+			{
+				$nearv = $v;
+				$dist = mag($r);
+			}
+		}
+	}
+
+	
+	//get the edges from the vertices
+	if($nearv != "")
+	{
+		//select the vertices
+		select -r $vn;
+		select -add $nearv;
+		
+		//get the shared edges
+		string $ed1[] = `polyInfo -vertexToEdge $vn`;
+		string $tokens1[];
+		tokenize $ed1[0] " :\n\r" $tokens1;
+		
+		string $ed2[] = `polyInfo -vertexToEdge $nearv`;
+		string $tokens2[];
+		tokenize $ed2[0] " :\n\r" $tokens2;
+		
+		//isolate and save our edge
+		for($t in $tokens1)
+		{
+			if($t != "VERTEX")
+			{					
+				for($e in $tokens2)
+				{
+					if($e != "VERTEX")
+					{
+						//compare arrays
+						if($t == $e)
+						{
+							$edn = ($savedMesh + ".e[" + $e + "]"); //save
+						}
+					}
+				}
+			}
+		}
+	}
+	
+	
+	//select our edge
+	if($edn != "")
+	{
+		selectType -ocm -polymeshEdge true; //selectionMode "Edge"
+		select -r $edn;
+		
+		//edge ring
+		polySelectSp -loop;
+		string $edgelist[] = `filterExpand -ex 1 -sm 32`;
+		
+		//delete
+		performPolyDeleteElements;
+	}
+	
+	
+	//done, reselect mesh
+	$savedVertexMesh = "";
+	select -r $savedMesh;
+}
+
+
+
+
+
